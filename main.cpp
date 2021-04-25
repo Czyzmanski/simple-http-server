@@ -48,7 +48,7 @@ void create_urls_for_correlated_resources(
 void process_start_line_handle_target_file(
         const std::string &target_path,
         const std::string &directory,
-        FILE *file,
+        std::ifstream &file,
         response_map_t &response_map
 ) {
     char *target_act_path = realpath(target_path.c_str(), nullptr);
@@ -57,29 +57,15 @@ void process_start_line_handle_target_file(
         // Check if directory_act_path is a prefix of target_act_path.
         if (strlen(directory_act_path) < strlen(target_act_path) &&
             std::string(target_act_path).rfind(directory_act_path, 0) == 0) {
-            fseek(file, 0, SEEK_END);
-            long file_length = ftell(file);
-            fseek(file, 0, SEEK_SET);
-            char *buffer = (char *) malloc((file_length + 1) * sizeof(char));
-            if (buffer != nullptr) {
-                fread(buffer, sizeof(char), file_length, file);
-                buffer[file_length] = '\0';
-                std::string message_body = buffer;
+            std::string message_body(std::istreambuf_iterator<char>(file), {});
 
-                response_map.insert({"status-code", "200"});
-                response_map.insert({"reason-phrase", "OK"});
-                response_map.insert({"message-body", message_body});
-                response_map.insert(
-                        {"content-length", std::to_string(message_body.length())}
-                );
-                response_map.insert({"content-type", "application/octet-stream"});
-
-                free(buffer);
-            }
-            else {
-                response_map.insert({"status-code", "500"});
-                response_map.insert({"reason-phrase", "Internal Server Error"});
-            }
+            response_map.insert({"status-code", "200"});
+            response_map.insert({"reason-phrase", "OK"});
+            response_map.insert({"message-body", message_body});
+            response_map.insert(
+                    {"content-length", std::to_string(message_body.length())}
+            );
+            response_map.insert({"content-type", "application/octet-stream"});
         }
         else {
             response_map.insert({"status-code", "404"});
@@ -93,7 +79,6 @@ void process_start_line_handle_target_file(
 
     free(directory_act_path);
     free(target_act_path);
-    fclose(file);
 }
 
 // Return first pos in request after start line.
@@ -119,15 +104,16 @@ size_t process_start_line(
     else {
         std::string target_path = directory == "/" ? target : directory + target;
         struct stat sb;
-        FILE *file = fopen(target_path.c_str(), "r");
+        std::ifstream file(target_path, std::ios::binary);
         if (stat(target_path.c_str(), &sb) >= 0 &&
-            S_ISREG(sb.st_mode) != 0 && file != nullptr) {
+            S_ISREG(sb.st_mode) != 0 && file.is_open()) {
             process_start_line_handle_target_file(
                     target_path,
                     directory,
                     file,
                     response_map
             );
+            file.close();
         }
         else {
             auto resrc_it = correlated_resources.find(target);
@@ -298,11 +284,10 @@ const std::string prepare_response(response_map_t &response_map) {
 }
 
 void send_response(int client_sock, const std::string &response) {
-    const char *buffer = response.c_str();
     ssize_t written;
     size_t start = 0;
-    size_t to_write = strlen(buffer);
-
+    size_t to_write = response.length();
+    const char *buffer = response.c_str();
     do {
         written = write(client_sock, buffer + start, to_write);
         if (written < 0) {
