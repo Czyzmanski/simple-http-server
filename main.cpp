@@ -334,7 +334,7 @@ void handle_client(
         }
 
         size_t i;
-        for (i = start; i < bytes_read && !new_request; i++) {
+        for (i = start; i < (size_t) bytes_read && !new_request; i++) {
             request += buffer[i];
             if (last_four_chars.length() == 4) {
                 last_four_chars = last_four_chars.substr(1);
