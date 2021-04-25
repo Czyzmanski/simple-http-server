@@ -210,7 +210,7 @@ response_map_t prepare_response_map(
         const std::string &directory,
         const correlated_resources_t &correlated_resources
 ) {
-    std::cout << "Request:\n" << request << std::endl << std::endl;
+    std::cout << "Request:" << std::endl << request;
 
     std::smatch match;
     std::string start_line_pattern(
@@ -274,30 +274,30 @@ const std::string prepare_response(response_map_t &response_map) {
     response += content_length_line;
     response += location_line;
     response += "\r\n";
-    response += message_body;
 
-    if (response.length() < 200) {
-        std::cout << "Response:\n" << response << std::endl << std::endl;
-    }
+    std::cout << "Response (only status line and headers):" << std::endl << response;
+
+    response += message_body;
 
     return response;
 }
 
 void send_response(int client_sock, const std::string &response) {
-    ssize_t written;
+    ssize_t sent;
     size_t start = 0;
-    size_t to_write = response.length();
+    size_t to_send = response.length();
     const char *buffer = response.c_str();
     do {
-        written = write(client_sock, buffer + start, to_write);
-        if (written < 0) {
-            //TODO: writing failed
-            exit(EXIT_FAILURE);
+        sent = send(client_sock, buffer + start, to_send, MSG_NOSIGNAL);
+        if (sent < 0) {
+            std::cerr << "Writing to client socket failed: " << std::strerror(errno)
+                      << std::endl << std::endl;
+            break;
         }
 
-        start += written;
-        to_write -= written;
-    } while (to_write > 0);
+        start += sent;
+        to_send -= sent;
+    } while (to_send > 0);
 }
 
 void handle_client(
@@ -319,8 +319,9 @@ void handle_client(
         if (start == 0) {
             bytes_read = read(client_sock, buffer, sizeof(char) * BUFFER_SIZE);
             if (bytes_read < 0) {
-                //TODO: reading failure
-                exit(EXIT_FAILURE);
+                std::cerr << "Error when reading from a client: "
+                          << std::strerror(errno) << std::endl << std::endl;
+                break;
             }
             else if (bytes_read == 0) {
                 // Client disconnected.
@@ -369,10 +370,10 @@ void handle_client(
         start = i % bytes_read;
     } while (bytes_read > 0);
 
-    printf("ending connection\n");
+    std::cout << "Closing connection with a client" << std::endl;
 
     if (close(client_sock) < 0) {
-        //TODO: closing connection failure
+        std::cerr << "Closing client socket failed: " << strerror(errno) << std::endl;
         exit(EXIT_FAILURE);
     }
 }
@@ -412,14 +413,25 @@ void handle_clients(
     for (;;) {
         struct sockaddr_in client_address;
         socklen_t client_address_len = sizeof(client_address);
+
+        std::cout << "Waiting for a client..." << std::endl;
+
         int client_sock = accept(
                 sock, (struct sockaddr *) &client_address, &client_address_len
         );
         if (client_sock < 0) {
-            std::cerr << "Accepting client failed: " << std::strerror(errno)
-                      << std::endl;
-            exit(EXIT_FAILURE);
+            std::cerr << "Accepting connection from a client failed: "
+                      << std::strerror(errno) << std::endl;
+
+            if (errno == ECONNABORTED) {
+                continue;
+            }
+            else {
+                exit(EXIT_FAILURE);
+            }
         }
+
+        std::cout << "Accepted connection from a client" << std::endl;
 
         handle_client(client_sock, directory, correlated_resources);
     }
@@ -451,9 +463,13 @@ int create_and_prepare_socket_for_accepting_clients(unsigned port_num) {
 
 int main(int argc, char *argv[]) {
     if (argc != 3 && argc != 4) {
-        //TODO: invalid program invocation
+        std::cerr << "Invalid number of arguments, usage:" << std::endl
+                  << "<path-to-executable> <directory> <filename> [<port>]"
+                  << std::endl;
         exit(EXIT_FAILURE);
     }
+
+    std::cout << "Starting server..." << std::endl;
 
     std::string directory = argv[1];
     if (directory[directory.length() - 1] == '/' && directory.length() > 1) {
