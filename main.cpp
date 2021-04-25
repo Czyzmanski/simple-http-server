@@ -45,7 +45,59 @@ void create_urls_for_correlated_resources(
     file.close();
 }
 
-void process_start_line(
+void process_start_line_handle_target_file(
+        const std::string &target_path,
+        const std::string &directory,
+        FILE *file,
+        response_map_t &response_map
+) {
+    char *target_act_path = realpath(target_path.c_str(), nullptr);
+    char *directory_act_path = realpath(directory.c_str(), nullptr);
+    if (target_act_path != nullptr && directory_act_path != nullptr) {
+        // Check if directory_act_path is a prefix of target_act_path.
+        if (strlen(directory_act_path) < strlen(target_act_path) &&
+            std::string(target_act_path).rfind(directory_act_path, 0) == 0) {
+            fseek(file, 0, SEEK_END);
+            long file_length = ftell(file);
+            fseek(file, 0, SEEK_SET);
+            char *buffer = (char *) malloc((file_length + 1) * sizeof(char));
+            if (buffer != nullptr) {
+                fread(buffer, sizeof(char), file_length, file);
+                buffer[file_length] = '\0';
+                std::string message_body = buffer;
+
+                response_map.insert({"status-code", "200"});
+                response_map.insert({"reason-phrase", "OK"});
+                response_map.insert({"message-body", message_body});
+                response_map.insert(
+                        {"content-length", std::to_string(message_body.length())}
+                );
+                response_map.insert({"content-type", "application/octet-stream"});
+
+                free(buffer);
+            }
+            else {
+                response_map.insert({"status-code", "500"});
+                response_map.insert({"reason-phrase", "Internal Server Error"});
+            }
+        }
+        else {
+            response_map.insert({"status-code", "404"});
+            response_map.insert({"reason-phrase", "Not Found"});
+        }
+    }
+    else {
+        response_map.insert({"status-code", "500"});
+        response_map.insert({"reason-phrase", "Internal Server Error"});
+    }
+
+    free(directory_act_path);
+    free(target_act_path);
+    fclose(file);
+}
+
+// Return first pos in request after start line.
+size_t process_start_line(
         const std::string &request,
         const std::string &start_line_pattern,
         const std::string &directory,
@@ -65,54 +117,17 @@ void process_start_line(
         response_map.insert({"reason-phrase", "Not Implemented"});
     }
     else {
-        std::string target_path = directory + target;
+        std::string target_path = directory == "/" ? target : directory + target;
         struct stat sb;
         FILE *file = fopen(target_path.c_str(), "r");
         if (stat(target_path.c_str(), &sb) >= 0 &&
             S_ISREG(sb.st_mode) != 0 && file != nullptr) {
-            char *target_act_path = realpath(target_path.c_str(), nullptr);
-            char *directory_act_path = realpath(directory.c_str(), nullptr);
-            if (target_act_path != nullptr && directory_act_path != nullptr) {
-                // Check if directory_act_path is a prefix of target_act_path.
-                if (strlen(directory_act_path) < strlen(target_act_path) &&
-                    std::string(target_act_path).rfind(directory_act_path, 0) == 0) {
-                    fseek (file, 0, SEEK_END);
-                    long file_length = ftell (file);
-                    fseek (file, 0, SEEK_SET);
-                    char *buffer = (char *) malloc ((file_length + 1) * sizeof(char));
-                    if (buffer != nullptr) {
-                        fread (buffer, sizeof(char), file_length, file);
-                        buffer[file_length] = '\0';
-                        std::string message_body = buffer;
-
-                        response_map.insert({"status-code", "200"});
-                        response_map.insert({"reason-phrase", "OK"});
-                        response_map.insert({"message-body", message_body});
-                        response_map.insert(
-                                {"content-length", std::to_string(message_body.length())}
-                        );
-                        response_map.insert({"content-type", "application/octet-stream"});
-
-                        free(buffer);
-                    }
-                    else {
-                        response_map.insert({"status-code", "500"});
-                        response_map.insert({"reason-phrase", "Internal Server Error"});
-                    }
-                }
-                else {
-                    response_map.insert({"status-code", "404"});
-                    response_map.insert({"reason-phrase", "Not Found"});
-                }
-            }
-            else {
-                response_map.insert({"status-code", "500"});
-                response_map.insert({"reason-phrase", "Internal Server Error"});
-            }
-
-            free(directory_act_path);
-            free(target_act_path);
-            fclose(file);
+            process_start_line_handle_target_file(
+                    target_path,
+                    directory,
+                    file,
+                    response_map
+            );
         }
         else {
             auto resrc_it = correlated_resources.find(target);
@@ -133,6 +148,8 @@ void process_start_line(
     }
 
     response_map.insert({"content-length", "0"});
+
+    return match[0].length();
 }
 
 void process_header_field_lines(
@@ -207,13 +224,13 @@ response_map_t prepare_response_map(
         const std::string &directory,
         const correlated_resources_t &correlated_resources
 ) {
-//    std::cout << "Request:\n" << request << std::endl << std::endl;
+    std::cout << "Request:\n" << request << std::endl << std::endl;
 
     std::smatch match;
     std::string start_line_pattern(
-            R"(^[a-zA-Z0-9.\-/]+\s/[a-zA-Z0-9.\-/]*\sHTTP/1.1\r\n)"
+            R"(^[^ ]+ /[^ ]* HTTP/1.1\r\n)"
     );
-    std::string header_field_pattern(R"([a-zA-Z0-9.\-/]+:\s*[a-zA-Z0-9.\-/]+\s*\r\n)");
+    std::string header_field_pattern(R"([^ ]+: *[^ ]+ *\r\n)");
     std::string ending_line_pattern(R"(\r\n$)");
     std::regex request_regex(
             start_line_pattern + "(" + header_field_pattern + ")*" + ending_line_pattern
@@ -228,14 +245,18 @@ response_map_t prepare_response_map(
         response_map.insert({"content-length", "0"});
     }
     else {
-        process_start_line(
+        size_t start = process_start_line(
                 request,
                 start_line_pattern,
                 directory,
                 correlated_resources,
                 response_map
         );
-        process_header_field_lines(request, header_field_pattern, response_map);
+        process_header_field_lines(
+                request.substr(start),
+                header_field_pattern,
+                response_map
+        );
     }
 
     return response_map;
@@ -450,7 +471,7 @@ int main(int argc, char *argv[]) {
     }
 
     std::string directory = argv[1];
-    if (directory[directory.length() - 1] == '/') {
+    if (directory[directory.length() - 1] == '/' && directory.length() > 1) {
         directory.pop_back();
     }
     std::string filename = argv[2];
